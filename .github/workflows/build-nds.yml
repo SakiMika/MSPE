@@ -1,0 +1,64 @@
+name: Build MSPE NDS first-pass
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container:
+      image: devkitpro/devkitarm:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain sanity check
+        run: |
+          set -euo pipefail
+          export DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
+          export DEVKITARM="${DEVKITARM:-$DEVKITPRO/devkitARM}"
+          export PATH="$DEVKITARM/bin:$DEVKITPRO/tools/bin:$PATH"
+          test -f "$DEVKITARM/ds_rules"
+          command -v arm-none-eabi-g++
+          command -v ndstool
+          command -v python3
+      - name: Static game/asset audit
+        run: python3 tests/test_mspe_port.py
+      - name: Compile NDS
+        run: |
+          set -euo pipefail
+          export DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
+          export DEVKITARM="${DEVKITARM:-$DEVKITPRO/devkitARM}"
+          export PATH="$DEVKITARM/bin:$DEVKITPRO/tools/bin:$PATH"
+          make clean
+          make -j2 PYTHON=python3 2>&1 | tee build.log
+      - name: Verify MSPE ROM identity
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import struct
+          p=Path('MSPE.nds')
+          if not p.is_file(): raise SystemExit('No output MSPE.nds')
+          b=p.read_bytes()
+          if len(b)<0x200: raise SystemExit('Invalid NDS header length')
+          if b[0x0c:0x10]!=b'MSPE': raise SystemExit('Unexpected title ID')
+          if struct.unpack_from('<I',b,0x20)[0]!=0x8000: raise SystemExit('Unexpected ARM9 offset')
+          Path('MapleStory Pirate Edition.nds').write_bytes(b)
+          print(f'MSPE: {len(b)} bytes, gamecode={b[0x0c:0x10].decode()}')
+          PYCODE
+      - name: Upload ROM and build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MSPE-NDS-${{ github.run_number }}
+          path: |
+            MSPE.nds
+            MapleStory Pirate Edition.nds
+            build.log
+          if-no-files-found: warn
